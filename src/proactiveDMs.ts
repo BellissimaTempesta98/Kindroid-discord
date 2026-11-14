@@ -5,8 +5,17 @@ import { ephemeralFetchConversation } from "./messageFetch";
 
 // Explicit opt-in: nothing runs unless PROACTIVE_DMS_ENABLED=true.
 // Only the configured user receives messages, never server members.
-const MIN_MINUTES = 120;
-const MAX_MINUTES = 360;
+const DEFAULT_MIN_MINUTES = 120;
+const DEFAULT_MAX_MINUTES = 360;
+
+function intervalMinutes(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1 && parsed <= 1440
+    ? parsed
+    : fallback;
+}
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const lastSent = new Map<string, number>();
 
@@ -15,7 +24,9 @@ function enabled(): boolean {
 }
 
 function delayMs(): number {
-  return (MIN_MINUTES + Math.random() * (MAX_MINUTES - MIN_MINUTES)) * 60_000;
+  const min = intervalMinutes("PROACTIVE_DM_MIN_MINUTES", DEFAULT_MIN_MINUTES);
+  const max = Math.max(min, intervalMinutes("PROACTIVE_DM_MAX_MINUTES", DEFAULT_MAX_MINUTES));
+  return (min + Math.random() * (max - min)) * 60_000;
 }
 
 function targetUserId(): string | null {
