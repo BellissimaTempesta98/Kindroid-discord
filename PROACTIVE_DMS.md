@@ -6,7 +6,7 @@ This feature is **OFF by default**. It does not change existing replies to incom
 1. Test this branch in a separate deployment. Keep the existing Railway deployment on `main` until the feature is verified.
 2. Set `PROACTIVE_DM_USER_ID` to the Discord *user ID* of the **one** intended recipient, not a username or bot ID.
 3. Set `PROACTIVE_DMS_ENABLED=true` only in the test deployment when ready. Set it to `false` (or remove it) to disable future scheduled messages.
-4. Start the service. Each configured Kin schedules its own first DM at a random time between **2 and 6 hours** after becoming ready. Subsequent messages are scheduled in the same range. Every added Kin using the existing consecutive `BOT_TOKEN_N` and `SHARED_AI_CODE_N` settings is included automatically.
+4. For a quick test only, set `PROACTIVE_DM_MIN_MINUTES=1` and `PROACTIVE_DM_MAX_MINUTES=1` in the separate test deployment. Remove both variables afterward to restore the normal randomized intervals.\n5. Start the service. Each configured Kin schedules its own first DM at a random time between **2 and 6 hours** after becoming ready. Subsequent messages are scheduled in the same range. Every added Kin using the existing consecutive `BOT_TOKEN_N` and `SHARED_AI_CODE_N` settings is included automatically.
 
 The Kin uses its existing Kindroid share code and recent DM history to draft the message, with an internal instruction to initiate a conversation. Its Discord bot account sends the message to the configured user.
 
