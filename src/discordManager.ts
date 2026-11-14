@@ -11,6 +11,7 @@ import {
 } from "discord.js";
 import { ephemeralFetchConversation } from "./messageFetch";
 import { callKindroidAI } from "./kindroidAPI";
+import { startProactiveDMs, stopProactiveDMs } from "./proactiveDMs";
 import { BotConfig, DMConversationCount } from "./types";
 
 //Bot back and forth (prevent infinite loop but allow for mentioning other bots in conversation)
@@ -133,6 +134,7 @@ async function createDiscordClientForBot(
   // Set up event handlers
   client.once("ready", () => {
     console.log(`Bot [${botConfig.id}] logged in as ${client.user?.tag}`);
+    startProactiveDMs(client, botConfig);
   });
 
   // Handle incoming messages
@@ -334,6 +336,7 @@ async function initializeAllBots(botConfigs: BotConfig[]): Promise<Client[]> {
  */
 async function shutdownAllBots(): Promise<void> {
   console.log("Shutting down all bots...");
+  stopProactiveDMs();
 
   const shutdownPromises = Array.from(activeBots.entries()).map(
     async ([id, client]) => {
