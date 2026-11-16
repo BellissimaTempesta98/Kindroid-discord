@@ -1,4 +1,4 @@
-import type { Client, DMChannel } from "discord.js";
+import type { Client, DMChannel, Guild } from "discord.js";
 import type { BotConfig } from "./types";
 import { callKindroidAI } from "./kindroidAPI";
 import { ephemeralFetchConversation } from "./messageFetch";
@@ -18,6 +18,9 @@ function intervalMinutes(name: string, fallback: number): number {
 }
 interface Schedule {
   timer?: ReturnType<typeof setTimeout>;
+  membershipRevision: number;
+  client: Client;
+  onGuildDelete: (guild: Guild) => void;
 }
 // Keep the schedule registered while a request is in flight.
 const schedules = new Map<string, Schedule>();
@@ -37,13 +40,41 @@ function targetUserId(): string | null {
   return /^\d{17,20}$/.test(id) ? id : null;
 }
 
+function targetGuildId(): string | null {
+  const id = process.env.PROACTIVE_DM_GUILD_ID?.trim() || "";
+  return /^\d{17,20}$/.test(id) ? id : null;
+}
+
+function hasAvailableGuild(client: Client, guildId: string): boolean {
+  const guild = client.guilds.cache.get(guildId);
+  return !!guild && guild.available;
+}
+
+async function verifyGuildMembership(client: Client, guildId: string): Promise<boolean> {
+  if (!client.isReady() || !hasAvailableGuild(client, guildId)) return false;
+  try {
+    // Force a Discord REST check: a stale cache must not authorize a DM.
+    const guild = await client.guilds.fetch({ guild: guildId, force: true, cache: false });
+    return guild.id === guildId && hasAvailableGuild(client, guildId);
+  } catch {
+    // Removed bots, missing access, rate limits and outages all fail closed.
+    return false;
+  }
+}
+
 async function sendProactiveDM(
   client: Client, botConfig: BotConfig, active: () => boolean
 ): Promise<void> {
   const userId = targetUserId();
-  if (!active() || !userId) return;
+  const guildId = targetGuildId();
+  if (!userId || !guildId) return;
+  const allowed = (): boolean => active()
+    && targetUserId() === userId && targetGuildId() === guildId
+    && hasAvailableGuild(client, guildId);
+  if (!allowed()) return;
 
   try {
+    if (!(await verifyGuildMembership(client, guildId)) || !allowed()) return;
     const user = await client.users.fetch(userId);
     if (user.bot) return;
     const channel = await user.createDM();
@@ -59,14 +90,18 @@ async function sendProactiveDM(
         timestamp: new Date().toISOString(),
       },
     ];
+    if (!allowed()) return;
     const aiResult = await callKindroidAI(
       botConfig.sharedAiCode,
       conversation,
       botConfig.enableFilter
     );
-    if (aiResult.type === "rate_limited" || !active() || targetUserId() !== userId) return;
+    if (aiResult.type === "rate_limited" || !allowed()) return;
     const reply = aiResult.reply.trim();
     if (!reply) return;
+    // Check again after generation and immediately before dispatch. The bot may
+    // have been removed while Kindroid was generating the message.
+    if (!(await verifyGuildMembership(client, guildId)) || !allowed()) return;
     await channel.send({ content: reply.slice(0, 2000), allowedMentions: { parse: [] } });
     console.log(`[Bot ${botConfig.id}] Sent opt-in proactive DM`);
   } catch (error) {
@@ -83,21 +118,39 @@ export function startProactiveDMs(client: Client, botConfig: BotConfig): void {
     console.warn("Proactive DMs disabled: PROACTIVE_DM_USER_ID must be a Discord user ID.");
     return;
   }
+  if (!targetGuildId()) {
+    console.warn("Proactive DMs disabled: PROACTIVE_DM_GUILD_ID must be a Discord server ID.");
+    return;
+  }
   if (schedules.has(botConfig.id)) return;
-  const schedule: Schedule = {};
+  const schedule: Schedule = {
+    membershipRevision: 0,
+    client,
+    onGuildDelete: (guild: Guild): void => {
+      if (guild.id === targetGuildId()) schedule.membershipRevision++;
+    },
+  };
+  // Invalidate an in-flight message on removal, even if the bot is re-added
+  // before generation or the final REST check finishes.
+  client.on("guildDelete", schedule.onGuildDelete);
   schedules.set(botConfig.id, schedule);
   const active = (): boolean => schedules.get(botConfig.id) === schedule
     && enabled() && client.isReady();
 
   const scheduleNext = (): void => {
     if (schedules.get(botConfig.id) !== schedule || !enabled()) {
-      if (schedules.get(botConfig.id) === schedule) schedules.delete(botConfig.id);
+      if (schedules.get(botConfig.id) === schedule) {
+        schedule.client.off("guildDelete", schedule.onGuildDelete);
+        schedules.delete(botConfig.id);
+      }
       return;
     }
     // Retain the timer through temporary disconnects and try next interval.
     schedule.timer = setTimeout(async () => {
       try {
-        await sendProactiveDM(client, botConfig, active);
+        const revision = schedule.membershipRevision;
+        await sendProactiveDM(client, botConfig,
+          () => active() && schedule.membershipRevision === revision);
       } finally {
         scheduleNext();
       }
@@ -111,6 +164,7 @@ export function startProactiveDMs(client: Client, botConfig: BotConfig): void {
 export function stopProactiveDMs(): void {
   for (const schedule of schedules.values()) {
     if (schedule.timer) clearTimeout(schedule.timer);
+    schedule.client.off("guildDelete", schedule.onGuildDelete);
   }
   // In-flight requests can finish, but their active check prevents delivery/rescheduling.
   schedules.clear();

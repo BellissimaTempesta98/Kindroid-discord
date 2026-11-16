@@ -1,35 +1,35 @@
-# Proactive Kin DMs — separate companion deployment
+# Proactive Kin DMs — guarded live rollout
 
-The feature stays off until explicitly enabled. Each configured Kin has its own random 2–6 hour timer, its own Kindroid share code and its own recent Discord DM history. Messages go only to the single configured human recipient. Additional consecutively numbered Kins are included on service restart.
+Deployment requires Bellissima's explicit approval. Use the existing Determined Purpose service and credentials. Do not change main or create another project. The reviewed release is deployed by an exact commit pin after approval.
 
-## Protect the working deployment
+## Required configuration
 
-Keep **Determined Purpose** and its `main` branch deployment unchanged. Deploy this repository's `proactive-dms` branch to a separate Railway service/project. Set `PROACTIVE_DMS_ONLY=true` there: this service sends proactive DMs and registers no incoming-message handler, while the original service continues handling replies. Never run multiple proactive replicas or another proactive service using the same bot accounts. Use one replica, no overlapping deployments, and disable Railway app sleeping for this background worker.
+- `PROACTIVE_DMS_ONLY=false`: keep ordinary incoming DM/server replies enabled in the combined service.
+- `PROACTIVE_DMS_ENABLED=false` for the initial installation and reconnect checks; enable only after separate activation approval.
+- `PROACTIVE_DM_USER_ID`: the one verified human recipient's Discord user ID.
+- `PROACTIVE_DM_GUILD_ID`: the exact verified Discord server ID. This is required; missing or invalid IDs disable proactive scheduling.
+- `PROACTIVE_DM_MIN_MINUTES=120`, `PROACTIVE_DM_MAX_MINUTES=360`: independent random 2–6 hour timers per Kin. No quiet hours.
 
-## Companion configuration
+Keep existing Kindroid API credentials, consecutively numbered bot tokens/share codes, and filter settings unchanged. Each bot retains its own share code and recent DM history. Additional configured Kins are loaded on service restart.
 
-Use Node.js 22.13+ and the existing `npm start` command. Supply the existing `KINDROID_INFER_URL`, `KINDROID_API_KEY`, and every consecutive `BOT_TOKEN_N` / `SHARED_AI_CODE_N` pair beginning at 1, including optional `ENABLE_FILTER_N`. Keep secrets exclusively in Railway variables. A separate project's variable copies do not automatically follow later changes to the original: add new Kins to the companion too.
+## Server membership enforcement
 
-Set:
+Every attempt requires the bot's connected Discord client to have the configured server available. Before contacting Kindroid, the bot requests that server from Discord with `force: true, cache: false`. It performs another fresh REST check after generation, immediately before sending. Cached membership, an existing DM, or membership in another server never authorizes delivery.
 
-- `PROACTIVE_DMS_ONLY=true`
-- `PROACTIVE_DMS_ENABLED=false` until the configuration is verified
-- `PROACTIVE_DM_USER_ID` to the verified Discord user ID of Bellissima, never a guessed username, server ID or bot ID
-- `PROACTIVE_DM_MIN_MINUTES=120`
-- `PROACTIVE_DM_MAX_MINUTES=360`
+A `guildDelete` event for the configured server invalidates in-flight generation, including when the bot is removed and re-added during the same generation. A removed bot automatically skips later proactive attempts even if its token remains configured. Other Kins keep their own timers. Re-adding a bot makes it eligible on a later scheduled attempt; it does not trigger an immediate DM.
 
-After the build succeeds and all expected bot accounts report ready, enable `PROACTIVE_DMS_ENABLED=true`. Each bot logs when scheduling starts and when a proactive DM is sent. For a short delivery test only, use both interval variables set to `1`, observe delivery from each Kin, then restore `120` and `360`. Confirm a reply is answered once by the original deployment. Discord privacy settings or missing mutual server access can prevent delivery.
+Missing access, failed membership verification, server unavailability or a disconnected client suppress proactive messages. Membership errors never terminate ordinary reply handling. A Discord outage may therefore delay proactive delivery. No privileged server-member-list intent or member enumeration is added; this checks the bot's own server access using its existing Guilds intent.
 
-## Behavior and rollback
+Discord membership checks and DM dispatch are separate operations: no implementation can recall a DM already dispatched/accepted by Discord, or atomically prevent a removal that happens after the final check and during dispatch. Removal events and a final fresh check minimize this boundary; do not promise retroactive cancellation.
 
-- No server-member discovery, group sends or messages to other users.
-- Blocked DMs, Kindroid errors and rate limits skip that attempt and retry at the next randomized interval; they do not stop other Kins.
-- Temporary disconnects skip delivery and retain a future attempt.
-- Shutdown clears timers and prevents an in-flight generation from subsequently sending or recreating its timer. A send already accepted by Discord cannot be retracted by shutdown.
-- Timers reset on restart; scheduling is in memory, with no database or cross-instance deduplication.
-- Disable or stop only the companion to roll back. Determined Purpose remains available.
-- Generation uses a private instruction appended to recent history. The model is asked to initiate naturally in the Kin's voice; wording still depends on Kindroid's response.
+## Limits and rollback
+
+Use one replica, no deployment overlap, and no sleeping. Timers are in memory, reset on restart, and provide no cross-instance deduplication. No quiet hours, idle check or global daily cap is implemented. There can be bursts and API rate limits. The existing inference helper has a 60-second timeout.
+
+Failed/blocked DMs and generation failures skip the attempt and retain the next timer. Shutdown clears timers/listeners and invalidates pending generation before dispatch. Rollback disables proactive messaging and restores the preserved baseline deployment/source/settings; it does not change credentials or delete prior Discord messages.
 
 ## Verification
 
-`npm test` runs isolated tests of the actual TypeScript modules using fake Discord/Kindroid clients and controlled timers, without credentials or outgoing messages. GitHub Actions additionally installs locked dependencies and runs `npm run build` before the same tests. These checks do not establish that real credentials, Kindroid API access or Discord delivery work; that requires the separate Railway delivery test.
+`npm test` executes actual TypeScript modules with fake Discord/Kindroid clients and controlled timers, without credentials or outgoing messages. Membership tests include removal before a tick, stale cache/missed gateway events, removal during generation/final verification, leave-and-rejoin, wrong server, outages, other-Kin independence and listener cleanup. The full TypeScript build must also pass.
+
+These checks do not verify real logins, actual server identity or Discord delivery. During the approved rollout, verify all configured Kins reconnect with ordinary replies preserved. After separately approved activation, require membership checks against the verified server and inspect actual delivery/skip results. Keep the original deployment and exact source commit available for rollback.
