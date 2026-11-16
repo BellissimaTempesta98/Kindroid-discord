@@ -12,7 +12,7 @@ import {
 import { ephemeralFetchConversation } from "./messageFetch";
 import { callKindroidAI } from "./kindroidAPI";
 import { startProactiveDMs, stopProactiveDMs } from "./proactiveDMs";
-import { BotConfig, DMConversationCount } from "./types";
+import type { BotConfig, DMConversationCount } from "./types";
 
 //Bot back and forth (prevent infinite loop but allow for mentioning other bots in conversation)
 type BotConversationChain = {
@@ -137,97 +137,101 @@ async function createDiscordClientForBot(
     startProactiveDMs(client, botConfig);
   });
 
-  // Handle incoming messages
-  client.on("messageCreate", async (message: Message) => {
-    // If the message is from the same bot, skip (avoid self-mention loops)
-    if (message.author.bot && message.author.id === client.user?.id) {
-      return;
-    }
-
-    if (message.author.bot) {
-      if (!shouldAllowBotMessage(message)) {
-        // If chain limit exceeded, do not respond.
-        return;
-      }
-    } else {
-      const channelId = message.channel.id;
-      if (botToBotChains.has(channelId)) {
-        botToBotChains.delete(channelId);
-      }
-    }
-
-    if (!(await canRespondToChannel(message.channel))) return;
-
-    // Handle DMs differently from server messages
-    if (message.channel.type === ChannelType.DM) {
-      await handleDirectMessage(message, botConfig);
-      return;
-    }
-
-    // Get the bot's user information
-    const botUser = client.user;
-    if (!botUser) return; // Guard against undefined client.user
-
-    const botUsername = botUser.username.toLowerCase();
-
-    // Check if the message mentions or references the bot
-    const isMentioned = message.mentions.users.has(botUser.id);
-    const containsBotName = message.content.toLowerCase().includes(botUsername);
-
-    // Ignore if the bot is not mentioned or referenced
-    if (!isMentioned && !containsBotName) return;
-
-    try {
-      // Show typing indicator
-      if (
-        message.channel instanceof BaseGuildTextChannel ||
-        message.channel instanceof DMChannel
-      ) {
-        await message.channel.sendTyping();
-      }
-
-      // Fetch recent conversation with caching
-      const conversationArray = await ephemeralFetchConversation(
-        message.channel as TextChannel | DMChannel,
-        30, // last 30 messages
-        5000 // 5 second cache
-      );
-
-      // Call Kindroid AI with the conversation context
-      const aiResult = await callKindroidAI(
-        botConfig.sharedAiCode,
-        conversationArray,
-        botConfig.enableFilter
-      );
-
-      // If rate limited, silently ignore
-      if (aiResult.type === "rate_limited") {
+  // Companion deployment sends scheduled DMs while the original handles replies.
+  if (process.env.PROACTIVE_DMS_ONLY?.toLowerCase() !== "true") {
+    // Handle incoming messages
+    client.on("messageCreate", async (message: Message) => {
+      // If the message is from the same bot, skip (avoid self-mention loops)
+      if (message.author.bot && message.author.id === client.user?.id) {
         return;
       }
 
-      // If it was a mention, reply to the message. Otherwise, send as normal message
-      if (isMentioned) {
-        await message.reply(aiResult.reply);
-      } else if (
-        message.channel instanceof BaseGuildTextChannel ||
-        message.channel instanceof DMChannel
-      ) {
-        await message.channel.send(aiResult.reply);
+      if (message.author.bot) {
+        if (!shouldAllowBotMessage(message)) {
+          // If chain limit exceeded, do not respond.
+          return;
+        }
+      } else {
+        const channelId = message.channel.id;
+        if (botToBotChains.has(channelId)) {
+          botToBotChains.delete(channelId);
+        }
       }
-    } catch (error) {
-      console.error(`[Bot ${botConfig.id}] Error:`, error);
-      const errorMessage =
-        "Beep boop, something went wrong. Please contact the Kindroid owner if this keeps up!";
-      if (isMentioned) {
-        await message.reply(errorMessage);
-      } else if (
-        message.channel instanceof BaseGuildTextChannel ||
-        message.channel instanceof DMChannel
-      ) {
-        await message.channel.send(errorMessage);
+
+      if (!(await canRespondToChannel(message.channel))) return;
+
+      // Handle DMs differently from server messages
+      if (message.channel.type === ChannelType.DM) {
+        await handleDirectMessage(message, botConfig);
+        return;
       }
-    }
-  });
+
+      // Get the bot's user information
+      const botUser = client.user;
+      if (!botUser) return; // Guard against undefined client.user
+
+      const botUsername = botUser.username.toLowerCase();
+
+      // Check if the message mentions or references the bot
+      const isMentioned = message.mentions.users.has(botUser.id);
+      const containsBotName = message.content.toLowerCase().includes(botUsername);
+
+      // Ignore if the bot is not mentioned or referenced
+      if (!isMentioned && !containsBotName) return;
+
+      try {
+        // Show typing indicator
+        if (
+          message.channel instanceof BaseGuildTextChannel ||
+          message.channel instanceof DMChannel
+        ) {
+          await message.channel.sendTyping();
+        }
+
+        // Fetch recent conversation with caching
+        const conversationArray = await ephemeralFetchConversation(
+          message.channel as TextChannel | DMChannel,
+          30, // last 30 messages
+          5000 // 5 second cache
+        );
+
+        // Call Kindroid AI with the conversation context
+        const aiResult = await callKindroidAI(
+          botConfig.sharedAiCode,
+          conversationArray,
+          botConfig.enableFilter
+        );
+
+        // If rate limited, silently ignore
+        if (aiResult.type === "rate_limited") {
+          return;
+        }
+
+        // If it was a mention, reply to the message. Otherwise, send as normal message
+        if (isMentioned) {
+          await message.reply(aiResult.reply);
+        } else if (
+          message.channel instanceof BaseGuildTextChannel ||
+          message.channel instanceof DMChannel
+        ) {
+          await message.channel.send(aiResult.reply);
+        }
+      } catch (error) {
+        console.error(`[Bot ${botConfig.id}] Error:`, error);
+        const errorMessage =
+          "Beep boop, something went wrong. Please contact the Kindroid owner if this keeps up!";
+        if (isMentioned) {
+          await message.reply(errorMessage);
+        } else if (
+          message.channel instanceof BaseGuildTextChannel ||
+          message.channel instanceof DMChannel
+        ) {
+          await message.channel.send(errorMessage);
+        }
+      }
+    });
+
+  }
 
   // Handle errors
   client.on("error", (error: Error) => {

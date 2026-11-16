@@ -15,7 +15,7 @@ A Node.js service that manages multiple Discord bots, each tied to a unique Kind
 
 ## Prerequisites
 
-- Node.js 16.x or higher
+- Node.js 22.13 or higher
 - Discord Bot Token(s) from the [Discord Developer Portal](https://discord.com/developers/applications)
 - Kindroid AI API access (API key and share code)
 

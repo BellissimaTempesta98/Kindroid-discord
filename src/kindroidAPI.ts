@@ -39,6 +39,7 @@ export async function callKindroidAI(
         enable_filter: enableFilter,
       },
       {
+        timeout: 60_000,
         headers: {
           Authorization: `Bearer ${process.env.KINDROID_API_KEY!}`,
           "X-Kindroid-Requester": hashedUsername,

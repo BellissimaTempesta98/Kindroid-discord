@@ -1,5 +1,5 @@
-import { Client, DMChannel } from "discord.js";
-import { BotConfig } from "./types";
+import type { Client, DMChannel } from "discord.js";
+import type { BotConfig } from "./types";
 import { callKindroidAI } from "./kindroidAPI";
 import { ephemeralFetchConversation } from "./messageFetch";
 
@@ -16,8 +16,11 @@ function intervalMinutes(name: string, fallback: number): number {
     ? parsed
     : fallback;
 }
-const timers = new Map<string, ReturnType<typeof setTimeout>>();
-const lastSent = new Map<string, number>();
+interface Schedule {
+  timer?: ReturnType<typeof setTimeout>;
+}
+// Keep the schedule registered while a request is in flight.
+const schedules = new Map<string, Schedule>();
 
 function enabled(): boolean {
   return process.env.PROACTIVE_DMS_ENABLED?.toLowerCase() === "true";
@@ -34,9 +37,11 @@ function targetUserId(): string | null {
   return /^\d{17,20}$/.test(id) ? id : null;
 }
 
-async function sendProactiveDM(client: Client, botConfig: BotConfig): Promise<void> {
+async function sendProactiveDM(
+  client: Client, botConfig: BotConfig, active: () => boolean
+): Promise<void> {
   const userId = targetUserId();
-  if (!enabled() || !userId || !client.isReady()) return;
+  if (!active() || !userId) return;
 
   try {
     const user = await client.users.fetch(userId);
@@ -59,16 +64,16 @@ async function sendProactiveDM(client: Client, botConfig: BotConfig): Promise<vo
       conversation,
       botConfig.enableFilter
     );
-    if (aiResult.type === "rate_limited" || !enabled()) return;
+    if (aiResult.type === "rate_limited" || !active() || targetUserId() !== userId) return;
     const reply = aiResult.reply.trim();
     if (!reply) return;
-    await channel.send(reply.slice(0, 2000));
-    lastSent.set(botConfig.id, Date.now());
+    await channel.send({ content: reply.slice(0, 2000), allowedMentions: { parse: [] } });
     console.log(`[Bot ${botConfig.id}] Sent opt-in proactive DM`);
   } catch (error) {
     // Closed DMs, permissions, failed Kindroid calls and transient outages
     // should never interfere with normal incoming-message handling.
-    console.error(`[Bot ${botConfig.id}] Proactive DM skipped:`, error);
+    console.error(`[Bot ${botConfig.id}] Proactive DM skipped:`,
+      error instanceof Error ? error.message : "Unknown error");
   }
 }
 
@@ -78,20 +83,25 @@ export function startProactiveDMs(client: Client, botConfig: BotConfig): void {
     console.warn("Proactive DMs disabled: PROACTIVE_DM_USER_ID must be a Discord user ID.");
     return;
   }
-  if (timers.has(botConfig.id)) return;
+  if (schedules.has(botConfig.id)) return;
+  const schedule: Schedule = {};
+  schedules.set(botConfig.id, schedule);
+  const active = (): boolean => schedules.get(botConfig.id) === schedule
+    && enabled() && client.isReady();
 
   const scheduleNext = (): void => {
-    if (!enabled() || !client.isReady()) {
-      timers.delete(botConfig.id);
+    if (schedules.get(botConfig.id) !== schedule || !enabled()) {
+      if (schedules.get(botConfig.id) === schedule) schedules.delete(botConfig.id);
       return;
     }
-    const timer = setTimeout(async () => {
-      timers.delete(botConfig.id);
-      if (!enabled() || !client.isReady()) return;
-      await sendProactiveDM(client, botConfig);
-      scheduleNext();
+    // Retain the timer through temporary disconnects and try next interval.
+    schedule.timer = setTimeout(async () => {
+      try {
+        await sendProactiveDM(client, botConfig, active);
+      } finally {
+        scheduleNext();
+      }
     }, delayMs());
-    timers.set(botConfig.id, timer);
   };
 
   scheduleNext();
@@ -99,7 +109,9 @@ export function startProactiveDMs(client: Client, botConfig: BotConfig): void {
 }
 
 export function stopProactiveDMs(): void {
-  for (const timer of timers.values()) clearTimeout(timer);
-  timers.clear();
-  lastSent.clear();
+  for (const schedule of schedules.values()) {
+    if (schedule.timer) clearTimeout(schedule.timer);
+  }
+  // In-flight requests can finish, but their active check prevents delivery/rescheduling.
+  schedules.clear();
 }
